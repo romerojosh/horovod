@@ -2085,32 +2085,20 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
     // Now, it should count all the tensors that are coming from other
     // ranks at this tick.
 
-    // 1. Get message lengths from every rank.
-    auto recvcounts = new int[state.size];
-    recvcounts[0] = 0;
-    MPI_Gather(MPI_IN_PLACE, 1, MPI_INT, recvcounts, 1, MPI_INT, RANK_ZERO,
-               state.mpi_comm);
+    // 1. Get maximum message length across ranks.
+    int max_length;
+    int encoded_message_length = 0;
+    MPI_Allreduce(&encoded_message_length, &max_length, 1, MPI_INT, MPI_MAX, state.mpi_comm);
 
-    // 2. Compute displacements.
-    auto displcmnts = new int[state.size];
-    size_t total_size = 0;
-    for (int i = 0; i < state.size; ++i) {
-      if (i == 0) {
-        displcmnts[i] = 0;
-      } else {
-        displcmnts[i] = recvcounts[i - 1] + displcmnts[i - 1];
-      }
-      total_size += recvcounts[i];
-    }
+    // 2. Collect messages from every rank.
+    auto buffer = new uint8_t[state.size * max_length];
+    MPI_Gather(MPI_IN_PLACE, max_length, MPI_BYTE, buffer, max_length, MPI_BYTE,
+               RANK_ZERO, state.mpi_comm);
 
-    // 3. Collect messages from every rank.
-    auto buffer = new uint8_t[total_size];
-    MPI_Gatherv(nullptr, 0, MPI_BYTE, buffer, recvcounts, displcmnts, MPI_BYTE,
-                RANK_ZERO, state.mpi_comm);
-
-    // 4. Process messages.
+    // 3. Process messages.
     for (int i = 1; i < state.size; ++i) {
-      auto rank_buffer_ptr = buffer + displcmnts[i];
+      auto rank_buffer_ptr = buffer + i*max_length;
+
       MPIRequestList received_message_list;
       MPIRequestList::ParseFromBytes(received_message_list, rank_buffer_ptr);
       for (auto& received_message : received_message_list.requests()) {
@@ -2129,8 +2117,6 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
     }
 
     // 5. Free buffers.
-    delete[] recvcounts;
-    delete[] displcmnts;
     delete[] buffer;
 
     // At this point, rank zero should have a fully updated tensor count
@@ -2333,11 +2319,12 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
     }
     MPIRequestList::SerializeToString(message_list, encoded_message);
     int encoded_message_length = (int)encoded_message.length() + 1;
-    MPI_Gather(&encoded_message_length, 1, MPI_INT, nullptr, 1, MPI_INT,
-               RANK_ZERO, state.mpi_comm);
-    MPI_Gatherv((void*)encoded_message.c_str(), encoded_message_length,
-                MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE, RANK_ZERO,
-                state.mpi_comm);
+    int max_length;
+    MPI_Allreduce(&encoded_message_length, &max_length, 1, MPI_INT,
+                  MPI_MAX, state.mpi_comm);
+    encoded_message.resize(max_length-1);
+    MPI_Gather((void*)encoded_message.c_str(), max_length, MPI_BYTE,
+                nullptr, 0, MPI_BYTE, RANK_ZERO, state.mpi_comm);
 
     int msg_length;
     MPI_Bcast(&msg_length, 1, MPI_INT, RANK_ZERO, state.mpi_comm);
