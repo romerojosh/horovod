@@ -68,6 +68,7 @@ local_size = _basics.local_size
 rank = _basics.rank
 local_rank = _basics.local_rank
 mpi_threads_supported = _basics.mpi_threads_supported
+register_group = _basics.register_group
 
 
 def _normalize_name(name):
@@ -75,7 +76,7 @@ def _normalize_name(name):
     return re.sub('[^a-zA-Z0-9_]', '_', name)
 
 
-def _allreduce(tensor, name=None):
+def _allreduce(tensor, group_id=None, name=None):
     """An op which sums an input tensor over all the Horovod processes.
 
     The reduction operation is keyed by the name of the op. The tensor type and
@@ -88,7 +89,10 @@ def _allreduce(tensor, name=None):
     """
     if name is None and not _executing_eagerly():
         name = 'HorovodAllreduce_%s' % _normalize_name(tensor.name)
-    return MPI_LIB.horovod_allreduce(tensor, name=name)
+    if (group_id is not None):
+        return MPI_LIB.horovod_allreduce(tensor, name=name, group_id=group_id)
+    else:
+        return MPI_LIB.horovod_allreduce(tensor, name=name)
 
 
 @ops.RegisterGradient('HorovodAllreduce')

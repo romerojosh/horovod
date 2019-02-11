@@ -39,12 +39,13 @@ from horovod.tensorflow.mpi_ops import allgather, broadcast, _allreduce
 from horovod.tensorflow.mpi_ops import init, shutdown
 from horovod.tensorflow.mpi_ops import size, local_size, rank, local_rank
 from horovod.tensorflow.mpi_ops import mpi_threads_supported
+from horovod.tensorflow.mpi_ops import register_group
 from horovod.tensorflow.util import _executing_eagerly
 
 import tensorflow as tf
 
 def allreduce(tensor, average=True, device_dense='', device_sparse='',
-              compression=Compression.none):
+              compression=Compression.none, group_id=None):
     """Perform an allreduce on a tf.Tensor or tf.IndexedSlices.
 
     This function performs a bandwidth-optimal ring allreduce on the input
@@ -85,7 +86,10 @@ def allreduce(tensor, average=True, device_dense='', device_sparse='',
         with tf.device(device_dense):
             horovod_size = tf.cast(size(), dtype=tensor.dtype)
             tensor_compressed, ctx = compression.compress(tensor)
-            summed_tensor_compressed = _allreduce(tensor_compressed)
+            if (group_id is not None):
+                summed_tensor_compressed = _allreduce(tensor_compressed, group_id)
+            else:
+                summed_tensor_compressed = _allreduce(tensor_compressed)
             summed_tensor = compression.decompress(summed_tensor_compressed, ctx)
             new_tensor = (tf.div(summed_tensor, horovod_size)
                           if average else summed_tensor)
@@ -154,7 +158,7 @@ class DistributedOptimizer(tf.train.Optimizer):
 
     def __init__(self, optimizer, name=None, use_locking=False, device_dense='',
                  device_sparse='', compression=Compression.none,
-                 sparse_as_dense=False):
+                 sparse_as_dense=False, num_groups=None):
         """Construct a new DistributedOptimizer, which uses another optimizer
         under the hood for computing single-process gradient values and
         applying gradient updates after the gradient values have been averaged
@@ -193,6 +197,7 @@ class DistributedOptimizer(tf.train.Optimizer):
         self._device_sparse = device_sparse
         self._compression = compression
         self._sparse_as_dense = sparse_as_dense
+        self._num_groups = num_groups
 
         def allreduce_grads(grads):
             with tf.name_scope(self._name + "_Allreduce"):
@@ -201,12 +206,41 @@ class DistributedOptimizer(tf.train.Optimizer):
                              if grad is not None and isinstance(grad, tf.IndexedSlices)
                              else grad for grad in grads]
 
-                return [allreduce(grad,
-                                  device_dense=self._device_dense,
-                                  device_sparse=self._device_sparse,
-                                  compression=self._compression)
-                        if grad is not None else grad
-                        for grad in grads]
+                # Note: Grouping does not support tf.IndexedSlices due to allgather requirement.
+                # Disabling feature if any tf.IndexedSlices entries are found.
+                # Right now, group ids/sizes are set here with basic logic. Would like to
+                # discuss ideas for more robust handling of this.
+                if (self._num_groups and self._num_groups > 0 and
+                    not any(isinstance(grad, tf.IndexedSlices) for grad in grads)):
+
+                    # Register groups/get group ids
+                    # Note: Each group needs a unique name. Currently using a basic namimg scheme
+                    # with gradient tensor names and an index. The group name is used to reassign
+                    # existing group ids in modes of operation where the group registration calls
+                    # may occur multiple times in a loop on the same set of tensors.
+                    num_grads_per_group = (len(grads) + self._num_groups - 1) // self._num_groups
+                    group_ids = [register_group(num_grads_per_group,
+                                                "%s:%s:%d" % (grads[0].name, grads[-1].name, i))
+                                 for i in range(len(grads) // num_grads_per_group)]
+                    if len(grads) % num_grads_per_group != 0:
+                        group_ids.append(register_group(len(grads) % num_grads_per_group,
+                                                        "%s:%s:%d" % (grads[0].name, grads[-1].name,
+                                                        len(grads) // num_grads_per_group + 1)))
+
+                    return [allreduce(grad,
+                                      device_dense=self._device_dense,
+                                      device_sparse=self._device_sparse,
+                                      compression=self._compression,
+                                      group_id=group_ids[idx // num_grads_per_group])
+                            if grad is not None else grad
+                            for idx,grad in enumerate(grads)]
+                else:
+                    return [allreduce(grad,
+                                      device_dense=self._device_dense,
+                                      device_sparse=self._device_sparse,
+                                      compression=self._compression)
+                            if grad is not None else grad
+                            for grad in grads]
 
         if _executing_eagerly():
             self._allreduce_grads = tf.contrib.eager.defun(allreduce_grads)

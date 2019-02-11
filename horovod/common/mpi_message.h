@@ -23,6 +23,9 @@
 namespace horovod {
 namespace common {
 
+// Null group ID used when no group is provided.
+#define NULL_GROUP_ID 0
+
 enum MPIDataType {
   HOROVOD_UINT8 = 0,
   HOROVOD_INT8 = 1,
@@ -68,6 +71,9 @@ public:
   int32_t device() const;
   void set_device(int32_t value);
 
+  int32_t group_id() const;
+  void set_group_id(int32_t value);
+
   const std::vector<int64_t>& tensor_shape() const;
   void set_tensor_shape(const std::vector<int64_t>& value);
   void add_tensor_shape(int64_t value);
@@ -81,6 +87,9 @@ private:
   MPIDataType tensor_type_ = MPIDataType::HOROVOD_UINT8;
   int32_t root_rank_ = 0;
   int32_t device_ = 0;
+  // NOTE: group_id is not included in flatbuffer as it is not
+  // used in standard control path
+  int32_t group_id_ = NULL_GROUP_ID;
   std::string tensor_name_;
   std::vector<int64_t> tensor_shape_;
 };
