@@ -418,5 +418,102 @@ void MPIResponseList::SerializeToString(const MPIResponseList& response_list,
   output = std::string((char*)buf, size);
 }
 
+void MPIResponseCache::set_capacity(uint32_t capacity) {
+  capacity_ = capacity;
+  iters_.reserve(capacity + RESERVED_CACHE_BITS);
+}
+
+uint32_t MPIResponseCache::capacity() const {return capacity_;}
+
+size_t MPIResponseCache::current_size() const {return cache_.size();}
+
+bool MPIResponseCache::cached(const MPIRequest& message) const {
+  return table_.find(message.tensor_name()) != table_.end();
+}
+
+bool MPIResponseCache::cached(const MPIResponse& response) const {
+  assert(response.tensor_names().size() == 1);
+  return table_.find(response.tensor_names()[0]) != table_.end();
+}
+
+void MPIResponseCache::put_(const MPIResponse& response) {
+  uint32_t cache_bit;
+  if (this->cached(response)) {
+    cache_bit = table_[response.tensor_names()[0]];
+    auto& entry = *iters_[cache_bit];
+    // Do not allow caching of response with same name as existing
+    // response but with different params.
+    assert(entry.response_type() == response.response_type() &&
+           entry.devices() == response.devices() &&
+           entry.tensor_sizes() == response.tensor_sizes());
+    cache_.erase(iters_[cache_bit]);
+  } else if (cache_.size() == capacity_) {
+    auto& entry = cache_.back();
+    cache_bit = table_[entry.tensor_names()[0]];
+    table_.erase(entry.tensor_names()[0]);
+    cache_.pop_back();
+  } else {
+    cache_bit = counter_++;
+    iters_.resize(counter_);
+  }
+
+  cache_.push_front(response);
+  iters_[cache_bit] = cache_.begin();
+  table_[response.tensor_names()[0]] = cache_bit;
+}
+
+void MPIResponseCache::put(const MPIResponse& response) {
+  if (capacity_ == 0) return;
+
+  // If response is fused, split back into individual responses
+  if (response.tensor_names().size() > 0) {
+    for (auto& name : response.tensor_names()) {
+      MPIResponse new_response;
+      new_response.add_tensor_name(name);
+      new_response.set_response_type(response.response_type());
+      new_response.set_devices(response.devices());
+      new_response.set_tensor_sizes(response.tensor_sizes());
+      this->put_(new_response);
+    }
+  } else {
+    this->put_(response);
+  }
+}
+
+const MPIResponse& MPIResponseCache::get_response(const MPIRequest& message) {
+  assert(this->cached(message));
+  uint32_t cache_bit = table_[message.tensor_name()];
+  auto it = iters_[cache_bit];
+  cache_.push_front(std::move(*it));
+  cache_.erase(it);
+  iters_[cache_bit] = cache_.begin();
+  return cache_.front();
+}
+
+const MPIResponse& MPIResponseCache::get_response(uint32_t cache_bit) {
+  assert(cache_bit < iters_.size());
+  auto it = iters_[cache_bit];
+  cache_.push_front(std::move(*it));
+  cache_.erase(it);
+  iters_[cache_bit] = cache_.begin();
+  return cache_.front();
+}
+
+const MPIResponse& MPIResponseCache::peek_response(const MPIRequest& message) const {
+  assert(this->cached(message));
+  uint32_t cache_bit = table_.at(message.tensor_name());
+  return *iters_[cache_bit];
+}
+
+const MPIResponse& MPIResponseCache::peek_response(uint32_t cache_bit) const {
+  assert(cache_bit < iters_.size());
+  return *iters_[cache_bit];
+}
+
+uint32_t MPIResponseCache::peek_cache_bit(const MPIRequest& message) const {
+  assert(this->cached(message));
+  return table_.at(message.tensor_name());
+}
+
 } // namespace common
 } // namespace horovod

@@ -17,8 +17,12 @@
 #ifndef HOROVOD_MPI_MESSAGE_H
 #define HOROVOD_MPI_MESSAGE_H
 
+#include <list>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#define RESERVED_CACHE_BITS 2
 
 namespace horovod {
 namespace common {
@@ -171,6 +175,30 @@ public:
 private:
   std::vector<MPIResponse> responses_;
   bool shutdown_ = false;
+};
+
+// LRU cache of MPIResponses
+class MPIResponseCache {
+public:
+  void set_capacity(uint32_t capacity);
+  uint32_t capacity() const;
+  size_t current_size() const;
+  bool cached(const MPIRequest& message) const;
+  bool cached(const MPIResponse& response) const;
+  void put(const MPIResponse& response);
+  const MPIResponse& get_response(const MPIRequest& message);
+  const MPIResponse& get_response(uint32_t cache_bit);
+  const MPIResponse& peek_response(const MPIRequest& message) const;
+  const MPIResponse& peek_response(uint32_t cache_bit) const;
+  uint32_t peek_cache_bit(const MPIRequest& message) const;
+
+private:
+  void put_(const MPIResponse& response);
+  uint32_t counter_ = RESERVED_CACHE_BITS; // Leave room for status bits
+  uint32_t capacity_;
+  std::list<MPIResponse> cache_;
+  std::vector<std::list<MPIResponse>::iterator> iters_;
+  std::unordered_map<std::string, uint32_t> table_;
 };
 
 } // namespace common
