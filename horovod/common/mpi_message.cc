@@ -515,5 +515,16 @@ uint32_t MPIResponseCache::peek_cache_bit(const MPIRequest& message) const {
   return table_.at(message.tensor_name());
 }
 
+void MPIResponseCache::update_cache_bits() {
+  // Iterate over current cache state and reassign cache bits. Least recently
+  // used get higher cache positions.
+  auto it = cache_.begin();
+  for (int i = 0; i < (int)cache_.size(); ++i) {
+    iters_[i + RESERVED_CACHE_BITS] = it;
+    table_[it->tensor_names()[0]] =  i + RESERVED_CACHE_BITS;
+    ++it;
+  }
+}
+
 } // namespace common
 } // namespace horovod

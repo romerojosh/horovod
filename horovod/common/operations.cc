@@ -2233,32 +2233,18 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
 }
 
 // If all messages in queue have responses in cache, use fast path with
-// less coordination.
-void RunBypass(std::queue<MPIRequest>& message_queue, HorovodGlobalState& state,
-               bool is_coordinator) {
+// no additional MPI coordination.
+void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
+               HorovodGlobalState& state) {
 
-  // Rank 0 sets operation order based on its queue. Do this cheaply via broadcast
-  // of an integer vector of cache bits in queue order.
-  std::vector<int> cache_bits;
-  cache_bits.reserve(message_queue.size());
-  if (is_coordinator) {
-    while (!message_queue.empty()) {
-      auto& message = message_queue.front();
-      cache_bits.push_back(state.response_cache.peek_cache_bit(message));
-      message_queue.pop();
-    }
-    MPI_Bcast(cache_bits.data(), cache_bits.size(),
-              MPI_INT, RANK_ZERO, state.mpi_comm);
-  } else {
-    cache_bits.resize(message_queue.size());
-    MPI_Bcast(cache_bits.data(), cache_bits.size(),
-              MPI_INT, RANK_ZERO, state.mpi_comm);
-  }
+  // Clear message queue.
+  message_queue = std::queue<MPIRequest>();
 
-  // Convert cache bits to responses.
+  // Convert cache hits to responses. Populate in reverse order so that least
+  // recently used responses get priority.
   std::deque<MPIResponse> responses;
-  for (auto bit : cache_bits) {
-    responses.push_back(state.response_cache.get_response(bit));
+  for (auto bit : cache_hits) {
+    responses.push_front(state.response_cache.get_response(bit));
   }
 
   // Fuse responses as normal.
@@ -2270,6 +2256,9 @@ void RunBypass(std::queue<MPIRequest>& message_queue, HorovodGlobalState& state,
   for (auto& response : response_list.responses()) {
     PerformOperation(state.tensor_table, response);
   }
+
+  // Reassign cache bits based on current cache state.
+  state.response_cache.update_cache_bits();
 }
 
 // The coordinator currently follows a master-worker paradigm. Rank zero acts
@@ -2382,7 +2371,7 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
   if (state.response_cache.capacity() > 0) {
     if (cache_hits.size() > 0 && !uncached_in_queue) {
       // If only cached messages in queue, use fast coordination path.
-      RunBypass(message_queue, state, is_coordinator);
+      RunBypass(message_queue, cache_hits, state);
       return !should_shut_down;
     } else if (!uncached_in_queue) {
       // Quick return if there are no uncached messages in any worker queue.
@@ -2396,6 +2385,13 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
   std::vector<std::string> ready_to_reduce;
   if (is_coordinator) {
     while (!message_queue.empty()) {
+      // Skip cached messages.
+      if (state.response_cache.capacity() > 0 &&
+          state.response_cache.cached(message_queue.front())) {
+        message_queue.pop();
+        continue;
+      }
+
       // Pop the first available message message
       MPIRequest message = message_queue.front();
       message_queue.pop();
@@ -2466,6 +2462,15 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
     // choose which ones and in what order, and will notify the other ranks
     // before doing each reduction.
     std::deque<MPIResponse> responses;
+
+    if (state.response_cache.capacity() > 0) {
+      // Prepopulate response list with cached responses. Populate in reverse
+      // order so that least recently used responses get priority.
+      for (auto bit : cache_hits) {
+        responses.push_front(state.response_cache.peek_response(bit));
+      }
+    }
+
     for (auto& tensor_name : ready_to_reduce) {
       MPIResponse response =
           ConstructMPIResponse(state.message_table, tensor_name);
@@ -2521,7 +2526,11 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
           (int)response.devices().size() == state.size) {
         state.response_cache.put(response);
       }
+    }
 
+    if (state.response_cache.capacity() > 0) {
+      // Reassign cache bits based on current cache state.
+      state.response_cache.update_cache_bits();
     }
 
     // Check for stalled tensors.
@@ -2540,6 +2549,11 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
     MPIRequestList message_list;
     message_list.set_shutdown(should_shut_down);
     while (!message_queue.empty()) {
+      // Skip cached messages.
+      if (state.response_cache.cached(message_queue.front())) {
+        message_queue.pop();
+        continue;
+      }
       message_list.add_request(message_queue.front());
       message_queue.pop();
     }
@@ -2587,6 +2601,11 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
           (int)response.devices().size() == state.size) {
         state.response_cache.put(response);
       }
+    }
+
+    if (state.response_cache.capacity() > 0) {
+      // Reassign cache bits based on current cache state.
+      state.response_cache.update_cache_bits();
     }
 
     if (state.param_manager.IsAutoTuning()) {

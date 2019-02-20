@@ -191,6 +191,7 @@ public:
   const MPIResponse& peek_response(const MPIRequest& message) const;
   const MPIResponse& peek_response(uint32_t cache_bit) const;
   uint32_t peek_cache_bit(const MPIRequest& message) const;
+  void update_cache_bits();
 
 private:
   void put_(const MPIResponse& response);
