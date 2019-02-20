@@ -200,6 +200,7 @@ private:
   std::list<MPIResponse> cache_;
   std::vector<std::list<MPIResponse>::iterator> iters_;
   std::unordered_map<std::string, uint32_t> table_;
+  bool bits_outdated_ = false;
 };
 
 } // namespace common
