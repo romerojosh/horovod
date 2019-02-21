@@ -2251,6 +2251,21 @@ void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
   MPIResponseList response_list;
   PopulateMPIResponseList(response_list, responses, state);
 
+  std::vector<std::string> tensor_names;
+  int64_t total_tensor_size = 0;
+  if (state.param_manager.IsAutoTuning()) {
+    for (auto& response : response_list.responses()) {
+      if (response.response_type() == MPIResponse::ResponseType::ALLREDUCE) {
+        for (auto& tensor_name : response.tensor_names()) {
+          tensor_names.push_back(tensor_name);
+          // TODO: Shouldn't there be a lock here to protect tensor_table?
+          auto& entry = state.tensor_table[tensor_name];
+          total_tensor_size += entry.tensor->size();
+        }
+      }
+    }
+  }
+
   // Perform the collective operation. All nodes should end up performing
   // the same operation.
   for (auto& response : response_list.responses()) {
@@ -2259,6 +2274,10 @@ void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
 
   // Reassign cache bits based on current cache state.
   state.response_cache.update_cache_bits();
+
+  if (state.param_manager.IsAutoTuning()) {
+    state.param_manager.Update(tensor_names, total_tensor_size);
+  }
 }
 
 // The coordinator currently follows a master-worker paradigm. Rank zero acts
