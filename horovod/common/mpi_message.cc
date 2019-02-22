@@ -104,6 +104,10 @@ int32_t MPIRequest::device() const { return device_; }
 
 void MPIRequest::set_device(int32_t value) { device_ = value; }
 
+int32_t MPIRequest::group_id() const { return group_id_; }
+
+void MPIRequest::set_group_id(int32_t value) { group_id_ = value; }
+
 const std::vector<int64_t>& MPIRequest::tensor_shape() const {
   return tensor_shape_;
 }

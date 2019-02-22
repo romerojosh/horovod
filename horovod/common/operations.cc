@@ -108,6 +108,16 @@ using MessageTable = std::unordered_map<
     std::string,
     std::tuple<std::vector<MPIRequest>, std::chrono::steady_clock::time_point>>;
 
+// Table storing information on groups for allreduce grouping.
+struct GroupTableEntry {
+  int group_id;
+  int group_size;
+  std::string group_name;
+  // Note: We can add other data to this struct to more error checking
+  // if desired.
+};
+using GroupTable = std::unordered_map<int, GroupTableEntry>;
+
 // The global state required for the MPI ops.
 //
 // MPI is a library that stores a lot of global per-program state and often
@@ -211,11 +221,24 @@ struct HorovodGlobalState {
   // Current shared buffer size
   int64_t shared_buffer_size = 0;
 
+  // Perform allreduces in fixed groups (set by framework). Allows for bypass of
+  // global coordination.
+  bool grouped_allreduces = false;
+
+  // Information on registered groups.
+  GroupTable group_table;
+
   // LRU cache of MPIResponses
   MPIResponseCache response_cache;
 
   // Bit array used for cache intersection
   std::vector<long long> cache_mask;
+
+  // Map to relate string group names to assigned group_ids
+  std::unordered_map<std::string, int> group_name_to_id;
+
+  // Next group id available
+  int next_group_id = 0;
 
 // The CUDA stream used for data transfers and within-allreduce operations.
 // A naive implementation would use the TensorFlow StreamExecutor CUDA
@@ -282,6 +305,11 @@ const Status DUPLICATE_NAME_ERROR = Status::InvalidArgument(
     "Requested to allreduce, allgather, or broadcast a tensor with the same "
     "name as another tensor that is currently being processed.  If you want "
     "to request another tensor, use a different tensor name.");
+
+const Status UNREGISTERED_GROUP_ERROR = Status::InvalidArgument(
+    "Requested to assign an allreduce to a group that has not been "
+    "registered. A valid group id can be obtained via the register_group "
+    "function called prior to submitting the allreduce operation.");
 
 #define OP_ERROR(entries, error_message)                                       \
   {                                                                            \
@@ -2091,6 +2119,15 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
     state.perform_stall_check = false;
   }
 
+  // Set flag for grouped allreduces
+  // TODO: Put in param manager?
+  auto horovod_grouped_allreduces =
+      std::getenv("HOROVOD_GROUPED_ALLREDUCES");
+  if (horovod_grouped_allreduces != nullptr &&
+      std::strtol(horovod_grouped_allreduces, nullptr, 10) > 0) {
+    state.grouped_allreduces = true;
+  }
+
   // Set flag for hierarchical allgather. Ignore if Horovod is running on a
   // single node.
   auto horovod_hierarchical_allgather =
@@ -2332,6 +2369,8 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
 
   bool uncached_in_queue = false;
   std::set<int> cache_hits;
+  std::unordered_set<int> ready_groups;
+  std::unordered_map<int, int> message_count;
 
   std::queue<MPIRequest> message_queue;
   {
@@ -2350,6 +2389,35 @@ bool RunLoopOnce(HorovodGlobalState& state, bool is_coordinator) {
       } else {
         uncached_in_queue = true;
       }
+
+      // Keep track of group message counts
+      if (state.grouped_allreduces) {
+        int group_id = message.group_id();
+        int count = ++message_count[group_id];
+        if (group_id != NULL_GROUP_ID &&
+            count == state.group_table[group_id].group_size) {
+          ready_groups.insert(group_id);
+        }
+      }
+    }
+
+    // Remove tensors from incomplete groups from queue and replace to state
+    // queue for next cycle.
+    size_t num_messages = message_queue.size();
+    for (size_t i = 0; i < num_messages; ++i) {
+      auto message = message_queue.front();
+      if (message.group_id() == NULL_GROUP_ID ||
+          ready_groups.find(message.group_id()) != ready_groups.end()) {
+        message_queue.push(std::move(message));
+      } else {
+        if (state.response_cache.capacity() > 0 &&
+            state.response_cache.cached(message)) {
+          int cache_bit = state.response_cache.peek_cache_bit(message);
+          cache_hits.erase(cache_bit);
+        }
+        state.message_queue.push(std::move(message));
+      }
+      message_queue.pop();
     }
   }
 
@@ -2725,6 +2793,36 @@ int horovod_mpi_threads_supported() {
   }
   return horovod_global.mpi_threads_supported ? 1 : 0;
 }
+
+int horovod_register_group(int group_size, const char* group_name_c) {
+  if (!horovod_global.initialization_done) {
+    return -1;
+  }
+
+  auto group_name = std::string(group_name_c);
+
+  std::lock_guard<std::mutex> guard(horovod_global.mutex);
+  // Get group id, either preexisting or new if needed
+  if (horovod_global.group_name_to_id.find(group_name) !=
+      horovod_global.group_name_to_id.end()) {
+    int group_id = horovod_global.group_name_to_id[group_name];
+    assert(group_size == horovod_global.group_table[group_id].group_size);
+    // Note: Can add more error checking here.
+    return group_id;
+  } else {
+    int group_id = horovod_global.next_group_id;
+    horovod_global.next_group_id++;
+
+    // Add group to table
+    GroupTableEntry e;
+    e.group_id = group_id;
+    e.group_size = group_size;
+    e.group_name = group_name;
+    horovod_global.group_table.emplace(group_id, std::move(e));
+    horovod_global.group_name_to_id[group_name] = group_id;
+    return group_id;
+  }
+}
 }
 
 // MPI must be initialized and the background thread must be running before
@@ -2734,7 +2832,8 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> output,
                               std::shared_ptr<ReadyEvent> ready_event,
                               const std::string name, const int device,
-                              StatusCallback callback) {
+                              StatusCallback callback,
+                              const int group_id) {
   MPIRequest message;
   message.set_request_rank(horovod_global.rank);
   message.set_tensor_name(name);
@@ -2755,6 +2854,16 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
   e.callback = callback;
 
   std::lock_guard<std::mutex> guard(horovod_global.mutex);
+
+  if (horovod_global.grouped_allreduces) {
+    if (group_id != NULL_GROUP_ID &&
+        horovod_global.group_table.find(group_id) ==
+        horovod_global.group_table.end()) {
+      return UNREGISTERED_GROUP_ERROR;
+    }
+    message.set_group_id(group_id);
+  }
+
   if (horovod_global.shut_down) {
     return SHUT_DOWN_ERROR;
   }
