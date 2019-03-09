@@ -2277,11 +2277,11 @@ void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
   // Clear message queue.
   message_queue = std::queue<MPIRequest>();
 
-  // Convert cache hits to responses. Populate in reverse order so that least
+  // Convert cache hits to responses. Populate so that least
   // recently used responses get priority.
   std::deque<MPIResponse> responses;
   for (auto bit : cache_hits) {
-    responses.push_front(state.response_cache.get_response(bit));
+    responses.push_back(state.response_cache.get_response(bit));
   }
 
   // Fuse responses as normal.
