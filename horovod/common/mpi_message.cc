@@ -525,12 +525,12 @@ void MPIResponseCache::update_cache_bits() {
   if (!bits_outdated_) return;
 
   // Iterate over current cache state and reassign cache bits. Least recently
-  // used get higher cache positions.
-  auto it = cache_.begin();
+  // used get lower cache positions.
+  auto it = --cache_.end();
   for (int i = 0; i < (int)cache_.size(); ++i) {
     iters_[i + RESERVED_CACHE_BITS] = it;
     table_[it->tensor_names()[0]] =  i + RESERVED_CACHE_BITS;
-    ++it;
+    --it;
   }
 
   bits_outdated_ = false;
