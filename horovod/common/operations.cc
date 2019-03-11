@@ -2251,6 +2251,14 @@ void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
   MPIResponseList response_list;
   PopulateMPIResponseList(response_list, responses, state);
 
+  if (!response_list.responses().empty()) {
+    std::string tensors_ready;
+    for (auto r : response_list.responses()) {
+      tensors_ready += r.tensor_names_string() + "; " ;
+    }
+    LOG(TRACE) << "Sending ready responses as " << tensors_ready;
+  }
+
   std::vector<std::string> tensor_names;
   int64_t total_tensor_size = 0;
   if (state.param_manager.IsAutoTuning()) {
@@ -2269,7 +2277,10 @@ void RunBypass(std::queue<MPIRequest>& message_queue, std::set<int>& cache_hits,
   // Perform the collective operation. All nodes should end up performing
   // the same operation.
   for (auto& response : response_list.responses()) {
+    LOG(TRACE, state.rank) << "Performing " << response.tensor_names_string();
+    LOG(DEBUG, state.rank) << "Processing " << response.tensor_names().size() << " tensors";
     PerformOperation(state.tensor_table, response);
+    LOG(TRACE, state.rank) << "Finished performing " << response.tensor_names_string();
   }
 
   // Reassign cache bits based on current cache state.
