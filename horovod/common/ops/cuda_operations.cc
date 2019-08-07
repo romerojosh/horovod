@@ -173,7 +173,7 @@ Status CUDAAllreduce::FinalizeCUDAQueue(const std::vector<TensorTableEntry>& ent
     }
   });
 
-  finalizer_thread.detach();
+  finalizer_thread.join();
 
   return Status::InProgress();
 }
