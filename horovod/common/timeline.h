@@ -96,7 +96,7 @@ private:
   // stores actual wall clock when horovod timeline was initialized
   long long start_time_since_epoch_utc_micros_ = -1;
   // mutex that protects timeline writer state
-  std::recursive_mutex writer_mutex_;
+  std::mutex writer_mutex_;
 };
 
 enum TimelineState { UNKNOWN, NEGOTIATING, TOP_LEVEL, ACTIVITY };
@@ -150,7 +150,7 @@ private:
   std::chrono::steady_clock::time_point start_time_;
 
   // A mutex that guards timeline state from concurrent access.
-  std::recursive_mutex mutex_;
+  std::mutex mutex_;
 
   // Current state of each tensor in the timeline.
   std::unordered_map<std::string, TimelineState> tensor_states_;

@@ -965,38 +965,38 @@ bool Controller::IncrementTensorCount(const Request& msg, int joined_size) {
 }
 
 void Controller::SetTimelineEnabled(bool value) {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   timeline_enabled_pending_ = value;
   timeline_enabled_ = value;
 }
 
 void Controller::SetTimelineEnabledPending(bool value) {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   timeline_enabled_pending_ = value;
 }
 
 void Controller::SetMarkCyclesInTimelinePending(bool value) {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   mark_cycles_in_timeline_pending_ = value;
 }
 
 void Controller::SynchronizeTimelineEnabled() {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   timeline_enabled_ = timeline_enabled_pending_;
 }
 
 bool Controller::TimeLineEnabled() {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   return timeline_enabled_;
 }
 
 bool Controller::TimelineEnabledPending() {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   return timeline_enabled_pending_;
 }
 
 bool Controller::MarkCyclesInTimelinePending() {
-  std::lock_guard<std::recursive_mutex> guard(timeline_mutex_);
+  std::lock_guard<std::mutex> guard(timeline_mutex_);
   return mark_cycles_in_timeline_pending_;
 }
 } // namespace common

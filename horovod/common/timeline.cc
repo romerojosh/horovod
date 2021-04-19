@@ -29,7 +29,7 @@ namespace horovod {
 namespace common {
 
 TimelineWriter::TimelineWriter() {
-  std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+  std::lock_guard<std::mutex> guard(writer_mutex_);
   cur_filename_ = "";
   new_pending_filename_ = "";
   pending_status_ = false;
@@ -37,7 +37,7 @@ TimelineWriter::TimelineWriter() {
 
 void TimelineWriter::SetPendingTimelineFile(const std::string& filename) {
   {
-    std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+    std::lock_guard<std::mutex> guard(writer_mutex_);
     if (cur_filename_ == filename) {
       LOG(INFO) << "Current filename for timeline is same as new filename. "
                    "Returning.";
@@ -49,7 +49,7 @@ void TimelineWriter::SetPendingTimelineFile(const std::string& filename) {
   // block until pending_Status is applied
   while (true) {
     {
-      std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+      std::lock_guard<std::mutex> guard(writer_mutex_);
       if (!pending_status_) {
         return;
       }
@@ -66,7 +66,7 @@ void TimelineWriter::SetPendingTimelineFile(const std::string& filename) {
 }
 
 std::string TimelineWriter::PendingTimelineFile() {
-  std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+  std::lock_guard<std::mutex> guard(writer_mutex_);
   return new_pending_filename_;
 }
 
@@ -132,7 +132,7 @@ void TimelineWriter::SetTimelineFile(const std::string& filename) {
 void TimelineWriter::Initialize(
     const std::string& file_name,
     std::chrono::steady_clock::time_point start_time_) {
-  std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+  std::lock_guard<std::mutex> guard(writer_mutex_);
   if (healthy())
     return;
 
@@ -176,7 +176,7 @@ void TimelineWriter::EnqueueWriteEvent(const std::string& tensor_name,
                                        const std::string& args,
                                        long ts_micros) {
   {
-    std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+    std::lock_guard<std::mutex> guard(writer_mutex_);
     if (!active() || !healthy())
       return;
   }
@@ -194,7 +194,7 @@ void TimelineWriter::EnqueueWriteEvent(const std::string& tensor_name,
 void TimelineWriter::EnqueueWriteMarker(const std::string& name,
                                         long ts_micros) {
   {
-    std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+    std::lock_guard<std::mutex> guard(writer_mutex_);
     if (!active() || !healthy())
       return;
   }
@@ -312,7 +312,7 @@ void TimelineWriter::WriterLoop() {
       record_queue_.pop();
     }
     {
-      std::lock_guard<std::recursive_mutex> guard(writer_mutex_);
+      std::lock_guard<std::mutex> guard(writer_mutex_);
       // check if we need to call SetTimeLineFile
       if (pending_status_)
         SetTimelineFile(PendingTimelineFile());
@@ -461,7 +461,7 @@ void Timeline::Initialize(const std::string& file_name,
 }
 
 void Timeline::Shutdown() {
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   initialized_.exchange(0);
   writer_.Shutdown();
   tensor_states_.clear();
@@ -499,7 +499,7 @@ void Timeline::NegotiateStart(const std::string& tensor_name,
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   // Note: Need to enable repeated calls to this routine during negotiate
   // phase. Repeated calls can occur if a cached response initiates the
   // negotiation phase, either due to multiple cycles with cache misses on
@@ -523,7 +523,7 @@ void Timeline::NegotiateRankReady(const std::string& tensor_name,
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   assert(tensor_states_[tensor_name] == TimelineState::NEGOTIATING);
   WriteEvent(tensor_name, 'X', rank_strings_[rank]);
 }
@@ -533,7 +533,7 @@ void Timeline::NegotiateEnd(const std::string& tensor_name) {
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   assert(tensor_states_[tensor_name] == TimelineState::NEGOTIATING);
   nvtx_handle_->EndRange(tensor_name);
   WriteEvent(tensor_name, 'E');
@@ -547,7 +547,7 @@ void Timeline::Start(const std::string& tensor_name,
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   assert(tensor_states_[tensor_name] == TimelineState::UNKNOWN);
   auto event_category = Response::ResponseType_Name(response_type);
   WriteEvent(tensor_name, 'B', event_category);
@@ -571,7 +571,7 @@ void Timeline::ActivityStart(const std::string& tensor_name,
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   assert(tensor_states_[tensor_name] == TimelineState::TOP_LEVEL);
   nvtx_handle_->StartActivityRange(tensor_name, activity);
   WriteEvent(tensor_name, 'B', activity);
@@ -589,7 +589,7 @@ void Timeline::ActivityEnd(const std::string& tensor_name) {
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   assert(tensor_states_[tensor_name] == TimelineState::ACTIVITY);
   nvtx_handle_->EndActivityRange(tensor_name);
   WriteEvent(tensor_name, 'E');
@@ -602,7 +602,7 @@ void Timeline::End(const std::string& tensor_name,
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
 
   // Pop out of current state, if applicable.
   if (tensor_states_[tensor_name] == TimelineState::ACTIVITY) {
@@ -625,7 +625,7 @@ void Timeline::MarkCycleStart() {
     return;
   }
 
-  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  std::lock_guard<std::mutex> guard(mutex_);
   WriteMarker("CYCLE_START");
 }
 

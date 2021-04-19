@@ -207,7 +207,7 @@ protected:
   bool timeline_enabled_ = false;
   bool timeline_enabled_pending_ = false;
   bool mark_cycles_in_timeline_pending_ = false;
-  std::recursive_mutex timeline_mutex_;
+  std::mutex timeline_mutex_;
 
 
   // Outside dependencies
